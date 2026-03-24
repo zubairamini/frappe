@@ -9,6 +9,7 @@ from frappe.database.utils import NestedSetHierarchy
 from frappe.model.db_query import get_timespan_date_range
 from frappe.query_builder import Field
 from frappe.query_builder.functions import Coalesce
+from frappe.utils import cstr
 
 
 def like(key: Field, value: str) -> frappe.qb:
@@ -22,6 +23,17 @@ def like(key: Field, value: str) -> frappe.qb:
 	        frappe.qb: `frappe.qb` object with `LIKE`
 	"""
 	return key.like(value)
+
+
+def ilike(key: Field, value: str) -> frappe.qb:
+	"""Wrapper method for `ILIKE`
+	Args:
+	        key (str): field
+	        value (str): criterion
+	Return:
+	        frappe.qb: `frappe.qb` object with `ILIKE`
+	"""
+	return key.ilike(value)
 
 
 def func_in(key: Field, value: list | tuple) -> frappe.qb:
@@ -96,7 +108,7 @@ def func_between(key: Field, value: list | tuple) -> frappe.qb:
 def func_is(key, value):
 	"Wrapper for IS"
 
-	match value.lower():
+	match cstr(value).lower():
 		case "set":
 			return key != ""
 		case "not set":
@@ -136,6 +148,7 @@ OPERATOR_MAP: dict[str, Callable] = {
 	"in": func_in,
 	"not in": func_not_in,
 	"like": like,
+	"ilike": ilike,
 	"not like": not_like,
 	"regex": func_regex,
 	"between": func_between,

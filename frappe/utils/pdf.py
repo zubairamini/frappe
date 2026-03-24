@@ -21,6 +21,7 @@ from frappe import _
 from frappe.core.doctype.file.utils import find_file_by_url
 from frappe.utils import cstr, scrub_urls
 from frappe.utils.caching import redis_cache
+from frappe.utils.data import get_url
 from frappe.utils.jinja_globals import bundled_asset, is_rtl
 
 cssutils.log.setLog(frappe.logger("cssutils"))
@@ -57,7 +58,7 @@ def pdf_body_html(template, args, **kwargs):
 		# Guess line number ?
 		frappe.throw(
 			_("Error in print format on line {0}: {1}").format(
-				_guess_template_error_line_number(template), e
+				_guess_template_error_line_number(template), str(e)
 			),
 			exc=frappe.PrintFormatError,
 			title=_("Print Format Error"),
@@ -456,3 +457,10 @@ def pdf_contains_js(file_content: bytes):
 		pass
 
 	return False
+
+
+def get_host_url():
+	if frappe.request:
+		return frappe.request.host_url
+	else:
+		return get_url() + "/"

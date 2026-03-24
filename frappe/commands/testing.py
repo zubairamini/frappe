@@ -373,6 +373,7 @@ def run_tests(
 @click.option("--use-orchestrator", is_flag=True, help="Use orchestrator to run parallel tests")
 @click.option("--dry-run", is_flag=True, default=False, help="Dont actually run tests")
 @click.option("--lightmode", is_flag=True, default=False, help="Skips all before test setup")
+@click.option("--failfast", is_flag=True, default=False, help="Exit on first failure occurred")
 @pass_context
 def run_parallel_tests(
 	context: CliCtxObj,
@@ -383,6 +384,7 @@ def run_parallel_tests(
 	use_orchestrator=False,
 	dry_run=False,
 	lightmode=False,
+	failfast=False,
 ):
 	from traceback_with_variables import activate_by_import
 
@@ -404,6 +406,7 @@ def run_parallel_tests(
 				total_builds=total_builds,
 				dry_run=dry_run,
 				lightmode=lightmode,
+				failfast=failfast,
 			)
 		mode = "Orchestrator" if use_orchestrator else "Parallel"
 		banner = f"""
@@ -437,17 +440,19 @@ def run_parallel_tests(
 @click.option("--parallel", is_flag=True, help="Run UI Test in parallel mode")
 @click.option("--with-coverage", is_flag=True, help="Generate coverage report")
 @click.option("--browser", default="chrome", help="Browser to run tests in")
+@click.option("--spec", help="Spec file to run")
 @click.option("--ci-build-id")
 @pass_context
 def run_ui_tests(
 	context: CliCtxObj,
 	app,
 	headless=False,
-	parallel=True,
+	parallel=False,
 	with_coverage=False,
 	browser="chrome",
 	ci_build_id=None,
 	cypressargs=None,
+	spec=None,
 ):
 	"Run UI tests"
 	site = get_site(context)
@@ -463,12 +468,19 @@ def run_ui_tests(
 
 	os.chdir(app_base_path)
 
-	node_bin = subprocess.getoutput("(cd ../frappe && yarn bin)")
+	node_bin = subprocess.run(
+		"(cd ../frappe && yarn bin)",
+		shell=True,
+		stdout=subprocess.PIPE,
+		stderr=subprocess.DEVNULL,
+		text=True,
+	).stdout.strip()
 	cypress_path = f"{node_bin}/cypress"
 	drag_drop_plugin_path = f"{node_bin}/../@4tw/cypress-drag-drop"
 	real_events_plugin_path = f"{node_bin}/../cypress-real-events"
 	testing_library_path = f"{node_bin}/../@testing-library"
 	coverage_plugin_path = f"{node_bin}/../@cypress/code-coverage"
+	cypress_split_path = f"{node_bin}/../cypress-split"
 
 	# check if cypress in path...if not, install it.
 	if not (
@@ -477,6 +489,7 @@ def run_ui_tests(
 		and os.path.exists(real_events_plugin_path)
 		and os.path.exists(testing_library_path)
 		and os.path.exists(coverage_plugin_path)
+		and os.path.exists(cypress_split_path)
 	):
 		# install cypress & dependent plugins
 		click.secho("Installing Cypress...", fg="yellow")
@@ -488,13 +501,28 @@ def run_ui_tests(
 				"@testing-library/cypress@^10",
 				"@testing-library/dom@8.17.1",
 				"@cypress/code-coverage@^3",
+				"cypress-split@^1.0.0",
 			]
 		)
+
+		# save package.json, install, then restore to avoid modifications
+		package_json_path = frappe.get_app_source_path("frappe", "package.json")
+		with open(package_json_path) as f:
+			package_json_contents = f.read()
+
 		frappe.commands.popen(f"(cd ../frappe && yarn add {packages} --no-lockfile)")
+
+		with open(package_json_path, "w") as f:
+			f.write(package_json_contents)
 
 	# run for headless mode
 	run_or_open = f"run --browser {browser}" if headless else "open"
-	formatted_command = f"{site_env} {password_env} {coverage_env} {cypress_path} {run_or_open}"
+	if headless and spec:
+		run_or_open += f" --spec {spec}"
+	parallel_env = "CYPRESS_CLOUD_PARALLEL=1" if parallel else "CYPRESS_CLOUD_PARALLEL=0"
+	formatted_command = (
+		f"{site_env} {password_env} {coverage_env} {parallel_env} {cypress_path} {run_or_open}"
+	)
 
 	if os.environ.get("CYPRESS_RECORD_KEY"):
 		formatted_command += " --record"

@@ -3,6 +3,7 @@
 
 import os
 from mimetypes import guess_type
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from werkzeug.wrappers import Response
@@ -11,11 +12,11 @@ import frappe
 import frappe.sessions
 import frappe.utils
 from frappe import _, is_whitelisted, ping
-from frappe.core.doctype.file.utils import find_file_by_url
+from frappe.core.doctype.file.utils import find_file_by_url, get_safe_file_name
 from frappe.core.doctype.server_script.server_script_utils import get_server_script_map
 from frappe.monitor import add_data_to_monitor
 from frappe.permissions import check_doctype_permission
-from frappe.utils import cint
+from frappe.utils import cint, get_files_path
 from frappe.utils.csvutils import build_csv_response
 from frappe.utils.deprecations import deprecated
 from frappe.utils.image import optimize_image
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 ALLOWED_MIMETYPES = (
 	"image/png",
 	"image/jpeg",
+	"image/gif",
 	"application/pdf",
 	"application/msword",
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -73,7 +75,7 @@ def execute_cmd(cmd, from_async=False):
 	try:
 		method = get_attr(cmd)
 	except Exception as e:
-		frappe.throw(_("Failed to get method for command {0} with {1}").format(cmd, e))
+		frappe.throw(_("Failed to get method for command {0} with {1}").format(cmd, str(e)))
 
 	if from_async:
 		method = method.queue
@@ -105,13 +107,13 @@ def is_valid_http_method(method):
 		frappe.throw_permission_error()
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True, methods=["POST"])
 def logout():
 	frappe.local.login_manager.logout()
 	frappe.db.commit()
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True, methods=["POST"])
 def web_logout():
 	frappe.local.login_manager.logout()
 	frappe.db.commit()
@@ -120,7 +122,7 @@ def web_logout():
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True, methods=["POST"])
 def upload_file():
 	user = None
 	if frappe.session.user == "Guest":
@@ -161,9 +163,27 @@ def upload_file():
 
 	if "file" in files:
 		file = files["file"]
-		content = file.stream.read()
 		filename = file.filename
 
+		if frappe.form_dict.chunk_index:
+			current_chunk = int(frappe.form_dict.chunk_index)
+			total_chunks = int(frappe.form_dict.total_chunk_count)
+			offset = int(frappe.form_dict.chunk_byte_offset)
+		else:
+			offset = 0
+			current_chunk = 0
+			total_chunks = 1
+
+		temp_path = Path(get_files_path(".temp-" + get_safe_file_name(filename), is_private=is_private))
+		with temp_path.open("ab" if current_chunk > 0 else "wb") as f:
+			total_file_size = frappe.form_dict.total_file_size or 0
+			f.seek(offset)
+			f.write(file.stream.read())
+			if not f.tell() >= int(total_file_size) or current_chunk != total_chunks - 1:
+				return
+
+		content = temp_path.read_bytes()
+		temp_path.unlink()
 		content_type = guess_type(filename)[0]
 		if optimize and content_type and content_type.startswith("image/"):
 			args = {"content": content, "content_type": content_type}
@@ -180,7 +200,7 @@ def upload_file():
 	if content is not None and (frappe.session.user == "Guest" or (user and not user.has_desk_access())):
 		filetype = guess_type(filename)[0]
 		if filetype not in ALLOWED_MIMETYPES:
-			frappe.throw(_("You can only upload JPG, PNG, PDF, TXT, CSV or Microsoft documents."))
+			frappe.throw(_("You can only upload JPG, PNG, GIF, PDF, TXT, CSV or Microsoft documents."))
 
 	if method:
 		method = frappe.get_attr(method)
@@ -211,14 +231,12 @@ def check_write_permission(doctype: str | None = None, name: str | None = None):
 		return
 
 	try:
-		doc = frappe.get_lazy_doc(doctype, name)
+		frappe.get_lazy_doc(doctype, name, check_permission="write")
 	except frappe.DoesNotExistError:
 		# doc has not been inserted yet, name is set to "new-some-doctype"
 		# If doc inserts fine then only this attachment will be linked see file/utils.py:relink_mismatched_files
 		frappe.new_doc(doctype).check_permission("write")
 		return
-
-	doc.check_permission("write")
 
 
 @frappe.whitelist(allow_guest=True)
@@ -266,18 +284,20 @@ def run_doc_method(method, docs=None, dt=None, dn=None, arg=None, args=None):
 	if dt:  # not called from a doctype (from a page)
 		if not dn:
 			dn = dt  # single
-		doc = frappe.get_doc(dt, dn)
+
+		if not isinstance(dn, str | int):
+			frappe.throw("'dn' must be a string or an integer")
+
+		doc = frappe.get_doc(dt, dn, check_permission=True)
 
 	else:
 		docs = frappe.parse_json(docs)
-		doc = frappe.get_doc(docs)
+		doc = frappe.get_doc(docs, check_permission=True)
 		doc._original_modified = doc.modified
 		doc.check_if_latest()
 
 	if not doc:
 		frappe.throw_permission_error()
-
-	doc.check_permission("read")
 
 	try:
 		args = frappe.parse_json(args)
