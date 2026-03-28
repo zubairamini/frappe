@@ -595,6 +595,8 @@ input.list-header-checkbox {
 			overflow-x: auto;
 			.result {
 				overflow-y: hidden;
+				display: table;
+				width: 100%;
 			}
 		}
 	}
